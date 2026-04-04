@@ -1,0 +1,190 @@
+name: Release ORCA
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Marketing version (e.g. 26.03.29)'
+        required: false
+        default: ''
+
+jobs:
+  prepare:
+    name: Prepare Versioning
+    runs-on: ubuntu-latest
+    outputs:
+      marketing_version: ${{ steps.vars.outputs.marketing }}
+      build_version: ${{ steps.vars.outputs.build }}
+      tag_name: ${{ steps.vars.outputs.tag }}
+    steps:
+      - name: Generate Version Strings
+        id: vars
+        run: |
+          MARKETING=$(date -u +'%y.%m.%d')
+          BUILD=$(date -u +'%y%m%d.%H%M')
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            TAG="v${MARKETING}-manual"
+          fi
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            MARKETING="${{ github.event.inputs.version }}"
+          fi
+          echo "marketing=$MARKETING" >> $GITHUB_OUTPUT
+          echo "build=$BUILD" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+  create-release:
+    name: Create GitHub Release
+    needs: prepare
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create_release.outputs.id }}
+    permissions:
+      contents: write
+    steps:
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          name: ORCA ${{ needs.prepare.outputs.marketing_version }} (${{ needs.prepare.outputs.build_version }})
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    name: Build macOS universal (arm64+x86_64)
+    needs: [prepare, create-release]
+    runs-on: macos-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build universal binary
+        run: make clean && make
+
+      - name: Verify architectures
+        run: file bin/orca
+
+      - name: Run Tests
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python3 tests/all.py
+
+      - name: Stage artifact
+        run: cp bin/orca orca-macos
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          files: orca-macos
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux-x86_64:
+    name: Build Linux x86_64
+    needs: [prepare, create-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libcurl4-openssl-dev
+
+      - name: Build
+        run: make clean && make
+
+      - name: Run Tests
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python3 tests/all.py
+
+      - name: Stage artifact
+        run: cp bin/orca orca-linux-x86_64
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          files: orca-linux-x86_64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux-arm64:
+    name: Build Linux arm64
+    needs: [prepare, create-release]
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y clang libcurl4-openssl-dev
+
+      - name: Build
+        run: make clean && make
+
+      - name: Run Tests
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: python3 tests/all.py
+
+      - name: Stage artifact
+        run: cp bin/orca orca-linux-arm64
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          files: orca-linux-arm64
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows-x64:
+    name: Build Windows x64
+    needs: [prepare, create-release]
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSYS2 with clang64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: CLANG64
+          update: true
+          install: >-
+            mingw-w64-clang-x86_64-clang
+            mingw-w64-clang-x86_64-curl
+            make
+
+      - name: Build
+        shell: msys2 {0}
+        run: make clean && make
+
+      - name: Stage artifact
+        shell: msys2 {0}
+        run: cp bin/orca.exe orca-windows-x64.exe
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag_name }}
+          files: orca-windows-x64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
